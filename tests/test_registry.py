@@ -269,19 +269,25 @@ def test_step_4b_wifi_resolved_names_match_iface_pattern() -> None:
     """If any wifi variant probes True, the instantiated sensors must name themselves
     `wifi_<iface>_signal` / `wifi_<iface>_ssid`."""
     from system_sensors.sensors.wifi import _find_wireless_interfaces
+    from system_sensors import sensors as _sensors_pkg
 
     ifaces = _find_wireless_interfaces()
     if not ifaces:
         pytest.skip("no wireless interfaces on this host")
 
-    discovered = discover_sensors()
+    # Discover only classes from the real package — exclude test-internal
+    # Sensor subclasses that may have been registered during this session
+    # and share logical names with real sensors.
+    pkg_prefix = _sensors_pkg.__name__ + "."
+    discovered = [
+        cls for cls in discover_sensors()
+        if cls.__module__.startswith(pkg_prefix)
+    ]
     probed = probe_all(discovered)
     selected = select_variants(probed)
     instances = instantiate_active_sensors(selected)
     resolved = {i.resolved_logical_name() for i in instances}
     for iface in ifaces:
-        # Either one or both should appear depending on which variants probe True;
-        # at minimum the wifi groups (if any selected) emit the expected pattern.
         sig = f"wifi_{iface}_signal"
         ssid = f"wifi_{iface}_ssid"
         if "wifi_signal" in selected:

@@ -37,6 +37,7 @@ from system_sensors.registry import (
 )
 from system_sensors.sensors.base import Sensor
 from system_sensors.sensors.disk import DiskUseMount
+from system_sensors.service import service_step
 
 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "system_sensors"
@@ -79,6 +80,11 @@ def _build_parser() -> argparse.ArgumentParser:
         "--non-interactive",
         action="store_true",
         help="Fail instead of prompting for missing required settings.",
+    )
+    parser.add_argument(
+        "--no-service",
+        action="store_true",
+        help="Skip the systemd service setup step.",
     )
     parser.add_argument(
         "--log-level",
@@ -293,6 +299,7 @@ def _print_summary(
         print(f"  = Unchanged ({len(merge.kept)})")
     print()
     print("Next: run `system-sensors-run` to start publishing.")
+    print("      Or let the installer set up a systemd service for you.")
 
 
 def _wrap_names(names: list[str], *, width: int) -> list[str]:
@@ -360,6 +367,12 @@ def _install(args: argparse.Namespace) -> int:
         merge=merge,
         is_first_install=is_first_install,
     )
+
+    # ── Systemd service step ─────────────────────────────────────────────
+    if not args.dry_run and not getattr(args, "no_service", False):
+        interactive = not args.non_interactive and sys.stdin.isatty()
+        service_step(config_path=config_dir, interactive=interactive)
+
     return 0
 
 
