@@ -100,29 +100,28 @@ def _venv_python() -> Path:
     if venv_env:
         for name in ("python3", "python"):
             candidate = Path(venv_env) / "bin" / name
-            if candidate.is_file():
-                return candidate.resolve()
+            if candidate.exists():
+                return candidate.absolute()
  
     # 2. sys.executable already inside a venv path
-    exe = Path(sys.executable).resolve()
+    exe = Path(sys.executable).absolute()
     exe_str = str(exe)
     if ".venv" in exe_str or "/venv/" in exe_str:
         return exe
  
     # 3. Walk up from package location looking for .venv
-    here = Path(__file__).resolve().parent
+    here = Path(__file__).absolute().parent
     for parent in [here, *here.parents]:
         for venv_name in (".venv", "venv"):
             for py_name in ("python3", "python"):
                 candidate = parent / venv_name / "bin" / py_name
-                if candidate.is_file():
-                    return candidate.resolve()
-        # Stop at filesystem root or home directory boundary
+                if candidate.exists():
+                    return candidate.absolute()
         if parent == parent.parent:
             break
  
     # Fallback
-    return exe
+    return Path(sys.executable).absolute()
  
  
 def _systemd_available() -> bool:
@@ -254,18 +253,17 @@ def manual_restart_commands() -> str:
 def service_step(
     *,
     config_path: Path,
+    venv_path: Path | None = None,
     interactive: bool = True,
 ) -> None:
     """Offer to install/update the systemd service.
  
-    Called at the end of the installer flow. Handles four cases:
-    - systemd not present     → skip gracefully
-    - service already exists  → offer restart
-    - first install           → offer to install automatically or print manual cmds
-    - no passwordless sudo    → always print manual commands
- 
     Args:
         config_path: The --config-path value (written into ExecStart).
+        venv_path:   Explicit path to the venv directory. If provided,
+                     the Python binary is taken from here directly rather
+                     than guessed from sys.executable. Bootstrap always
+                     knows this path and should pass it.
         interactive: If False, skip all prompts and just print commands.
     """
     if not _systemd_available():
@@ -274,7 +272,25 @@ def service_step(
         print("  Start manually with:  system-sensors-run")
         return
  
-    venv_python     = _venv_python()
+    # Resolve venv Python — explicit path wins, then fall back to detection
+    if venv_path is not None:
+        resolved_python = None
+        # Check common binary names including versioned ones like python3.11.
+        # Important: do NOT resolve symlinks here — venv Python binaries are
+        # symlinks to the system Python, but we want the venv path in the
+        # service file so systemd uses the venv's site-packages.
+        for name in ("python3", "python", "python3.13", "python3.12", "python3.11"):
+            candidate = (venv_path / "bin" / name).absolute()
+            if candidate.exists():
+                resolved_python = candidate
+                break
+        if resolved_python is None:
+            print(f"  Warning: no Python binary found in {venv_path / 'bin'} — falling back to detection")
+            resolved_python = _venv_python()
+    else:
+        resolved_python = _venv_python()
+ 
+    venv_python     = resolved_python
     run_as_user     = _current_user()
     service_content = build_service_file(
         run_as_user=run_as_user,
@@ -292,23 +308,40 @@ def service_step(
     # ── Service already installed ────────────────────────────────────────
     if already_installed:
         print(f"  {SERVICE_FILENAME!r} is already installed.")
+        print(f"  Python    : {venv_python}")
+        print(f"  Config    : {config_path}")
+ 
+        # Always rewrite the service file to keep the venv path current
+        if _has_passwordless_sudo():
+            ok, err = _write_and_enable(service_content)
+            if ok:
+                print(f"  ✓ Service file updated.")
+            else:
+                print(f"  ✗ Could not update service file: {err}")
+                print("  Run these commands manually:")
+                print()
+                _indent(manual_install_commands(service_content, config_path))
+                return
+        else:
+            print()
+            print("  sudo requires a password — run these to update the service file:")
+            print()
+            _indent(manual_install_commands(service_content, config_path))
+            return
+ 
         if not interactive:
             print()
-            print("  To restart after a reprobe, run:")
+            print("  To restart, run:")
             print(f"    {manual_restart_commands()}")
             return
  
         if _ask_yn("  Restart the service now?", default=True):
-            if _has_passwordless_sudo():
-                ok, err = _restart_or_start()
-                if ok:
-                    print(f"  ✓ Service restarted.")
-                else:
-                    print(f"  ✗ Restart failed: {err}")
-                    print(f"  Run manually:  {manual_restart_commands()}")
+            ok, err = _restart_or_start()
+            if ok:
+                print(f"  ✓ Service restarted.")
             else:
-                print("  Run this to restart:")
-                print(f"    {manual_restart_commands()}")
+                print(f"  ✗ Restart failed: {err}")
+                print(f"  Run manually:  {manual_restart_commands()}")
         return
  
     # ── First install ────────────────────────────────────────────────────
@@ -371,3 +404,4 @@ def _ask_yn(prompt: str, default: bool = True) -> bool:
 def _indent(text: str, prefix: str = "    ") -> None:
     for line in text.splitlines():
         print(f"{prefix}{line}")
+ 

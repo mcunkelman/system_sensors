@@ -1,13 +1,13 @@
 """CLI entrypoint: `system-sensors-install`.
-
+ 
 Probes the host, merges against any existing `sensors_enabled.yaml` (per PLAN.md
 merge semantics), and writes the generated config. On first run also seeds
 `settings.yaml` via interactive prompts (or non-interactive CLI flags).
 Subsequent runs never touch `settings.yaml`.
 """
-
+ 
 from __future__ import annotations
-
+ 
 import argparse
 import logging
 import socket
@@ -16,7 +16,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 from zoneinfo import ZoneInfo, ZoneInfoNotFoundError
-
+ 
 from system_sensors.config import (
     ConfigError,
     SensorsEnabled,
@@ -38,14 +38,14 @@ from system_sensors.registry import (
 from system_sensors.sensors.base import Sensor
 from system_sensors.sensors.disk import DiskUseMount
 from system_sensors.service import service_step
-
-
+ 
+ 
 DEFAULT_CONFIG_PATH = Path.home() / ".config" / "system_sensors"
 _LOG_LEVELS: tuple[str, ...] = ("DEBUG", "INFO", "WARNING", "ERROR")
-
+ 
 _log = logging.getLogger(__name__)
-
-
+ 
+ 
 def _build_parser() -> argparse.ArgumentParser:
     """Construct the argparse parser for the installer CLI."""
     parser = argparse.ArgumentParser(
@@ -87,12 +87,18 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Skip the systemd service setup step.",
     )
     parser.add_argument(
+        "--venv-path",
+        type=Path,
+        default=None,
+        help="Path to the venv directory. Used to write the correct Python path into the systemd service file. Set automatically by bootstrap.py.",
+    )
+    parser.add_argument(
         "--log-level",
         choices=_LOG_LEVELS,
         default="INFO",
         help="Logging verbosity. Default: INFO.",
     )
-
+ 
     parser.add_argument("--mqtt-hostname", type=str, default=None)
     parser.add_argument("--mqtt-port", type=int, default=None)
     parser.add_argument("--mqtt-username", type=str, default=None)
@@ -107,20 +113,20 @@ def _build_parser() -> argparse.ArgumentParser:
         help="Publish interval in seconds. Default: 60.",
     )
     return parser
-
-
+ 
+ 
 def _parse_args(argv: list[str] | None = None) -> argparse.Namespace:
     """Parse argv and return the resulting Namespace."""
     return _build_parser().parse_args(argv)
-
-
+ 
+ 
 def _hostname_default() -> str:
     try:
         return socket.gethostname().split(".")[0] or "system-sensors"
     except OSError:
         return "system-sensors"
-
-
+ 
+ 
 def _prompt(label: str, default: str | None) -> str:
     suffix = f" [{default}]" if default else ""
     while True:
@@ -132,8 +138,8 @@ def _prompt(label: str, default: str | None) -> str:
         if value:
             return value
         print(f"  {label} is required, please provide a value.", file=sys.stderr)
-
-
+ 
+ 
 def _prompt_port(default: int = 1883) -> int:
     while True:
         try:
@@ -151,8 +157,8 @@ def _prompt_port(default: int = 1883) -> int:
             print("  Port must be between 1 and 65535.", file=sys.stderr)
             continue
         return port
-
-
+ 
+ 
 def _prompt_timezone(default: str = "UTC") -> str:
     while True:
         value = _prompt("IANA timezone", default)
@@ -161,8 +167,8 @@ def _prompt_timezone(default: str = "UTC") -> str:
             return value
         except (ZoneInfoNotFoundError, ValueError):
             print(f"  Unknown IANA timezone {value!r}, try again.", file=sys.stderr)
-
-
+ 
+ 
 def _interactive_settings() -> Settings:
     """Walk the user through the required settings.yaml fields."""
     hostname_default = _hostname_default()
@@ -179,8 +185,8 @@ def _interactive_settings() -> Settings:
         timezone=tz,
         device_name=device_name,
     )
-
-
+ 
+ 
 def _settings_from_args(args: argparse.Namespace) -> Settings:
     """Build a Settings dataclass purely from CLI flags. Raises ConfigError if missing."""
     missing: list[str] = []
@@ -197,7 +203,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
             "settings.yaml not found and required flags are missing: "
             + ", ".join(missing)
         )
-
+ 
     port = args.mqtt_port if args.mqtt_port is not None else 1883
     if port < 1 or port > 65535:
         raise ConfigError(f"--mqtt-port must be between 1 and 65535 (got {port})")
@@ -205,7 +211,7 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         ZoneInfo(args.timezone)
     except (ZoneInfoNotFoundError, ValueError) as exc:
         raise ConfigError(f"Invalid --timezone {args.timezone!r}: {exc}") from exc
-
+ 
     return Settings(
         mqtt_hostname=args.mqtt_hostname,
         mqtt_port=port,
@@ -216,24 +222,24 @@ def _settings_from_args(args: argparse.Namespace) -> Settings:
         update_interval=args.update_interval if args.update_interval is not None else 60,
         device_name=args.device_name.lower(),
     )
-
-
+ 
+ 
 def _build_external_drive_sensors(settings: Settings) -> list[Sensor]:
     """Instantiate DiskUseMount instances for each entry in external_drives."""
     out: list[Sensor] = []
     for name, mount in settings.external_drives.items():
         out.append(DiskUseMount(mount_point=mount, logical_name=f"disk_use_{name}"))
     return out
-
-
+ 
+ 
 def _probe_host() -> list[Sensor]:
     """Run discovery + probe + variant selection. Returns ready-to-publish sensors."""
     classes = discover_sensors()
     probed = probe_all(classes)
     selected = select_variants(probed)
     return instantiate_active_sensors(selected)
-
-
+ 
+ 
 def _resolve_settings(
     args: argparse.Namespace, path: Path
 ) -> tuple[Settings, bool]:
@@ -241,7 +247,7 @@ def _resolve_settings(
     existing = load_settings(path)
     if existing is not None:
         return existing, False
-
+ 
     if args.non_interactive or not sys.stdin.isatty():
         if not args.non_interactive:
             raise ConfigError(
@@ -250,10 +256,10 @@ def _resolve_settings(
                 "--client-id=..., --timezone=..., --device-name=..."
             )
         return _settings_from_args(args), True
-
+ 
     return _interactive_settings(), True
-
-
+ 
+ 
 def _print_summary(
     *,
     config_dir: Path,
@@ -268,7 +274,7 @@ def _print_summary(
     last_probe = merge.new_state.last_probe_utc
     if last_probe.tzinfo is None:
         last_probe = last_probe.replace(tzinfo=timezone.utc)
-
+ 
     print("system_sensors install summary")
     print("==============================")
     print(f"Config dir:        {config_dir}")
@@ -300,8 +306,8 @@ def _print_summary(
     print()
     print("Next: run `system-sensors-run` to start publishing.")
     print("      Or let the installer set up a systemd service for you.")
-
-
+ 
+ 
 def _wrap_names(names: list[str], *, width: int) -> list[str]:
     """Wrap a comma-joined list of names to lines no wider than `width`."""
     lines: list[str] = []
@@ -319,14 +325,14 @@ def _wrap_names(names: list[str], *, width: int) -> list[str]:
     if current:
         lines.append(current.rstrip().rstrip(","))
     return lines
-
-
+ 
+ 
 def _install(args: argparse.Namespace) -> int:
     """Top-level install flow. Returns process exit code."""
     config_dir: Path = args.config_path
     s_path = settings_path(config_dir)
     se_path = sensors_enabled_path(config_dir)
-
+ 
     existing_settings = load_settings(s_path)
     if existing_settings is None:
         settings, _ = _resolve_settings(args, s_path)
@@ -338,12 +344,12 @@ def _install(args: argparse.Namespace) -> int:
     else:
         settings = existing_settings
         settings_status = "unchanged"
-
+ 
     instances = _probe_host()
     instances.extend(_build_external_drive_sensors(settings))
-
+ 
     probed_names: set[str] = {inst.resolved_logical_name() for inst in instances}
-
+ 
     existing_sensors_enabled = load_sensors_enabled(se_path)
     now = datetime.now(timezone.utc)
     merge = merge_probe_with_existing(
@@ -351,14 +357,14 @@ def _install(args: argparse.Namespace) -> int:
         existing=existing_sensors_enabled,
         now_utc=now,
     )
-
+ 
     is_first_install = existing_sensors_enabled is None
     if args.dry_run:
         sensors_status = "unchanged (dry run)"
     else:
         save_sensors_enabled(se_path, merge.new_state)
         sensors_status = "newly created" if is_first_install else "updated"
-
+ 
     _print_summary(
         config_dir=config_dir,
         settings_status=settings_status,
@@ -367,15 +373,20 @@ def _install(args: argparse.Namespace) -> int:
         merge=merge,
         is_first_install=is_first_install,
     )
-
+ 
     # ── Systemd service step ─────────────────────────────────────────────
     if not args.dry_run and not getattr(args, "no_service", False):
         interactive = not args.non_interactive and sys.stdin.isatty()
-        service_step(config_path=config_dir, interactive=interactive)
-
+        venv_path = getattr(args, "venv_path", None)
+        service_step(
+            config_path=config_dir,
+            venv_path=venv_path,
+            interactive=interactive,
+        )
+ 
     return 0
-
-
+ 
+ 
 def main(argv: list[str] | None = None) -> int:
     """Installer entrypoint. Returns process exit code."""
     args = _parse_args(argv)
@@ -383,7 +394,7 @@ def main(argv: list[str] | None = None) -> int:
         level=getattr(logging, args.log_level),
         format="%(levelname)s %(name)s: %(message)s",
     )
-
+ 
     try:
         return _install(args)
     except ConfigError as exc:
@@ -393,12 +404,12 @@ def main(argv: list[str] | None = None) -> int:
         _log.exception("Unhandled error in installer")
         print(f"system-sensors-install: unexpected error: {exc}", file=sys.stderr)
         return 1
-
-
+ 
+ 
 def _module_marker() -> dict[str, Any]:
     """Marker function kept for the test harness; do not remove."""
     return {"module": __name__}
-
-
+ 
+ 
 if __name__ == "__main__":
     raise SystemExit(main())

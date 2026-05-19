@@ -25,6 +25,7 @@ This script is stdlib-only and works before pip or paho-mqtt are installed.
 from __future__ import annotations
  
 import os
+import os
 import shutil
 import subprocess
 import sys
@@ -100,16 +101,27 @@ def _ask_yn(prompt: str, default: bool = True) -> bool:
  
 def check_python_version() -> None:
     current = sys.version_info[:2]
-    if current < MIN_PYTHON:
-        _err(
-            f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required, "
-            f"found {current[0]}.{current[1]}."
-        )
-        _info("On Raspberry Pi OS / Ubuntu:")
-        _info("  sudo apt install python3.11 python3.11-venv")
-        _info("Then re-run with:  python3.11 bootstrap.py")
-        sys.exit(1)
-    _ok(f"Python {current[0]}.{current[1]} detected")
+    if current >= MIN_PYTHON:
+        _ok(f"Python {current[0]}.{current[1]} detected")
+        return
+ 
+    # Before giving up, check if a suitable Python is available and re-exec
+    for candidate in ("python3.13", "python3.12", "python3.11"):
+        path = shutil.which(candidate)
+        if path:
+            # Re-exec this script with the better Python
+            print(f"  Python {current[0]}.{current[1]} detected — re-launching with {candidate} ...")
+            os.execv(path, [path] + sys.argv)
+            # os.execv replaces the process, so we never reach here
+ 
+    _err(
+        f"Python {MIN_PYTHON[0]}.{MIN_PYTHON[1]}+ required, "
+        f"found {current[0]}.{current[1]}."
+    )
+    _info("On Raspberry Pi OS / Ubuntu:")
+    _info("  sudo apt install python3.11 python3.11-venv")
+    _info("Then re-run with:  python3.11 bootstrap.py")
+    sys.exit(1)
  
  
 # ---------------------------------------------------------------------------
@@ -264,7 +276,7 @@ def run_installer(venv_path: Path, config_path: Path) -> None:
     # Hand off to the installer — it handles hardware probe, MQTT prompts,
     # config writes, and the service_step at the end.
     result = subprocess.run(
-        [str(installer), "--config-path", str(config_path)],
+        [str(installer), "--config-path", str(config_path), "--venv-path", str(venv_path)],
     )
     sys.exit(result.returncode)
  
